@@ -104,7 +104,7 @@ def set_location(cursor, ts, location):
 
 def get_ts_info(cursor, ts):
     query = """
-    SELECT rolname AS owner
+    SELECT rolname AS owner, pg_tablespace_location(oid) AS location
     FROM pg_tablespace
     JOIN pg_roles ON pg_roles.oid = pg_tablespace.spcowner
     WHERE spcname %(ts)s
@@ -148,8 +148,8 @@ def ts_matches(cursor, ts, owner, location):
        return False
     else:
         ts_info = get_ts_info(cursor, ts)
-        if location:
-            raise NotSupportedError('Reading LOCATION is not supported')
+        if location and location != ts_info['location']:
+            return False
         if owner and owner != ts_info['owner']:
             return False
         else:
