@@ -18,15 +18,15 @@
 
 DOCUMENTATION = '''
 ---
-module: postgresql_db
-short_description: Add or remove PostgreSQL databases from a remote host.
+module: postgresql_tablespace
+short_description: Add or remove PostgreSQL tablespace from a remote host.
 description:
-   - Add or remove PostgreSQL databases from a remote host.
+   - Add or remove PostgreSQL tablespace from a remote host.
 version_added: "0.6"
 options:
   name:
     description:
-      - name of the database to add or remove
+      - name of the tablespace to add
     required: true
     default: null
   login_user:
@@ -46,7 +46,7 @@ options:
     default: localhost
   owner:
     description:
-      - Name of the role to set as owner of the database
+      - Name of the role to set as owner of the tablespace
     required: false
     default: null
   port:
@@ -54,29 +54,12 @@ options:
       - Database port to connect to.
     required: false
     default: 5432
-  template:
+  location:
     description:
-      - Template used to create the database
-    required: false
-    default: null
-  encoding:
-    description:
-      - Encoding of the database
-    required: false
-    default: null
-  lc_collate:
-    description:
-      - Collation order (LC_COLLATE) to use in the database. Must match collation order of template database unless C(template0) is used as template.
-    required: false
-    default: null
-  lc_ctype:
-    description:
-      - Character classification (LC_CTYPE) to use in the database (e.g. lower, upper, ...) Must match LC_CTYPE of template database unless C(template0) is used as template.
-    required: false
-    default: null
+      - Directory where tablespace is to be located.
   state:
     description:
-      - The database state
+      - The tablespace state
     required: false
     default: present
     choices: [ "present", "absent" ]
@@ -89,17 +72,8 @@ author: Lorin Hochstein
 '''
 
 EXAMPLES = '''
-# Create a new database with name "acme"
-- postgresql_db: name=acme
-
-# Create a new database with name "acme" and specific encoding and locale
-# settings. If a template different from "template0" is specified, encoding
-# and locale settings must match those of the template.
-- postgresql_db: name=acme
-                 encoding='UTF-8'
-                 lc_collate='de_DE.UTF-8'
-                 lc_ctype='de_DE.UTF-8'
-                 template='template0'
+# Create a new tablespace with name "fast-raid"
+- postgresql_tablespace: name=fast-raid
 '''
 
 try:
@@ -118,93 +92,65 @@ class NotSupportedError(Exception):
 # PostgreSQL module specific support methods.
 #
 
-def set_owner(cursor, db, owner):
-    query = "ALTER DATABASE \"%s\" OWNER TO \"%s\"" % (db, owner)
+def set_owner(cursor, ts, owner):
+    query = "ALTER TABLESPACE \"%s\" OWNER TO \"%s\"" % (ts, owner)
     cursor.execute(query)
     return True
 
-def get_encoding_id(cursor, encoding):
-    query = "SELECT pg_char_to_encoding(%(encoding)s) AS encoding_id;"
-    cursor.execute(query, {'encoding': encoding})
-    return cursor.fetchone()['encoding_id']
+def set_location(cursor, ts, location):
+    query = "ALTER TABLESPACE \"%s\" LOCATION TO \"%s\"" % (ts, location)
+    cursor.execute(query)
+    return True
 
-def get_db_info(cursor, db):
+def get_ts_info(cursor, ts):
     query = """
-    SELECT rolname AS owner,
-    pg_encoding_to_char(encoding) AS encoding, encoding AS encoding_id,
-    datcollate AS lc_collate, datctype AS lc_ctype
-    FROM pg_database JOIN pg_roles ON pg_roles.oid = pg_database.datdba
-    WHERE datname = %(db)s
+    SELECT rolname AS owner
+    FROM pg_tablespace
+    JOIN pg_roles ON pg_roles.oid = pg_tablespace.spcowner
+    WHERE spcname %(ts)s
     """
-    cursor.execute(query, {'db':db})
+    cursor.execute(query, {'ts':ts})
     return cursor.fetchone()
 
-def db_exists(cursor, db):
-    query = "SELECT * FROM pg_database WHERE datname=%(db)s"
-    cursor.execute(query, {'db': db})
+def ts_exists(cursor, ts):
+    query = "SELECT * FROM pg_tablespace WHERE spcname=%(ts)s"
+    cursor.execute(query, {'ts': ts})
     return cursor.rowcount == 1
 
-def db_delete(cursor, db):
-    if db_exists(cursor, db):
-        query = "DROP DATABASE \"%s\"" % db
+def ts_delete(cursor, ts):
+    if db_exists(cursor, ts):
+        query = "DROP TABLESPACE \"%s\"" % ts
         cursor.execute(query)
         return True
     else:
         return False
 
-def db_create(cursor, db, owner, template, encoding, lc_collate, lc_ctype):
-    if not db_exists(cursor, db):
+def ts_create(cursor, ts, owner, location):
+    if not ts_exists(cursor, ts):
         if owner:
             owner = " OWNER \"%s\"" % owner
-        if template:
-            template = " TEMPLATE \"%s\"" % template
-        if encoding:
-            encoding = " ENCODING '%s'" % encoding
-        if lc_collate:
-            lc_collate = " LC_COLLATE '%s'" % lc_collate
-        if lc_ctype:
-            lc_ctype = " LC_CTYPE '%s'" % lc_ctype
-        query = 'CREATE DATABASE "%s"%s%s%s%s%s' % (db, owner,
-                                                    template, encoding,
-                                                    lc_collate, lc_ctype)
+        if location:
+            location = " LOCATION \"%s\"" % location
+        query = 'CREATE TABLESPACE "%s"%s%s' % (db, owner, location)
         cursor.execute(query)
         return True
     else:
-        db_info = get_db_info(cursor, db)
-        if (encoding and 
-            get_encoding_id(cursor, encoding) != db_info['encoding_id']):
-            raise NotSupportedError(
-                'Changing database encoding is not supported. '
-                'Current encoding: %s' % db_info['encoding']
-            )
-        elif lc_collate and lc_collate != db_info['lc_collate']:
-            raise NotSupportedError(
-                'Changing LC_COLLATE is not supported. '
-                'Current LC_COLLATE: %s' % db_info['lc_collate']
-            )
-        elif lc_ctype and lc_ctype != db_info['lc_ctype']:
-            raise NotSupportedError(
-                'Changing LC_CTYPE is not supported.'
-                'Current LC_CTYPE: %s' % db_info['lc_ctype']
-            )
-        elif owner and owner != db_info['owner']:
-            return set_owner(cursor, db, owner)
+        ts_info = get_ts_info(cursor, ts)
+        if location:
+            set_location(cursor, ts, location)
+        if owner and owner != ts_info['owner']:
+            set_owner(cursor, ts, owner)
         else:
             return False
 
-def db_matches(cursor, db, owner, template, encoding, lc_collate, lc_ctype):
-    if not db_exists(cursor, db):
+def ts_matches(cursor, ts, owner, location):
+    if not ts_exists(cursor, ts):
        return False
     else:
-        db_info = get_db_info(cursor, db)
-        if (encoding and 
-            get_encoding_id(cursor, encoding) != db_info['encoding_id']):
-            return False
-        elif lc_collate and lc_collate != db_info['lc_collate']:
-            return False
-        elif lc_ctype and lc_ctype != db_info['lc_ctype']:
-            return False
-        elif owner and owner != db_info['owner']:
+        ts_info = get_ts_info(cursor, ts)
+        if location:
+            raise NotSupportedError('Reading LOCATION is not supported')
+        if owner and owner != ts_info['owner']:
             return False
         else:
             return True
@@ -220,12 +166,9 @@ def main():
             login_password=dict(default=""),
             login_host=dict(default=""),
             port=dict(default="5432"),
-            db=dict(required=True, aliases=['name']),
+            ts=dict(required=True, aliases=['name']),
             owner=dict(default=""),
-            template=dict(default=""),
-            encoding=dict(default=""),
-            lc_collate=dict(default=""),
-            lc_ctype=dict(default=""),
+            location=dict(default=""),
             state=dict(default="present", choices=["absent", "present"]),
         ),
         supports_check_mode = True
@@ -234,13 +177,10 @@ def main():
     if not postgresqldb_found:
         module.fail_json(msg="the python psycopg2 module is required")
 
-    db = module.params["db"]
-    port = module.params["port"]
+    ts = module.params["ts"]
+    location = module.params["location"]
     owner = module.params["owner"]
-    template = module.params["template"]
-    encoding = module.params["encoding"]
-    lc_collate = module.params["lc_collate"]
-    lc_ctype = module.params["lc_ctype"]
+    port = module.params["port"]
     state = module.params["state"]
     changed = False
 
@@ -272,18 +212,16 @@ def main():
     try:
         if module.check_mode:
             if state == "absent":
-                changed = not db_exists(cursor, db)
+                changed = not ts_exists(cursor, db)
             elif state == "present":
-                changed = not db_matches(cursor, db, owner, template, encoding,
-                                         lc_collate, lc_ctype)
+                changed = not ts_matches(cursor, db, owner, location)
             module.exit_json(changed=changed,db=db)
 
         if state == "absent":
-            changed = db_delete(cursor, db)
+            changed = ts_delete(cursor, ts)
 
         elif state == "present":
-            changed = db_create(cursor, db, owner, template, encoding,
-                                lc_collate, lc_ctype)
+            changed = ts_create(cursor, ts, owner, location)
     except NotSupportedError, e:
         module.fail_json(msg=str(e))
     except Exception, e:
